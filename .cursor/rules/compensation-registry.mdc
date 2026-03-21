@@ -1,0 +1,271 @@
+---
+description: Employer Compensation Signal Registry — product, taxonomy, collection, schema, and analytical rules
+alwaysApply: true
+---
+
+EMPLOYER COMPENSATION SIGNAL REGISTRY — CURSOR RULES
+
+
+WHAT THIS SYSTEM IS
+
+A longitudinal, employer-anchored time-series dataset of compensation ranges derived from public job postings. Not a job board. Not a survey aggregator. Not a general web scraper. A narrow, high-signal registry of target employers with structured collectors that observe those employers systematically over time.
+
+Core differentiation from Levels.fyi: this data reflects what employers advertise they will pay, constrained by pay transparency law and competitive dynamics — not what candidates with strong offers chose to self-report. The moat is longitudinal history. Snapshot history cannot be retroactively acquired.
+
+
+WHAT THIS SYSTEM IS NOT
+
+- Not a general internet crawler
+- Not a GUI agent browsing company websites
+- Not trying to achieve full employer coverage on day one
+- Not competing with Indeed or LinkedIn on posting volume
+- Never mix candidate-reported compensation into the same tables as employer-posted ranges
+
+
+GEOGRAPHIC SCOPE
+
+Primary metros for v1: Seattle / Washington State broadly, Bay Area, SoCal (LA and San Diego), New York, Boston, Austin, Charlotte. Remote-first employers are their own segment regardless of HQ location.
+
+
+ROLE FAMILIES
+
+Nine families only. Do not create new ones without explicit instruction.
+
+  swe                   Software Engineering: frontend, backend, fullstack, mobile, generalist
+  infra                 Infrastructure: platform eng, SRE, DevOps, cloud eng, systems eng
+  data                  Data and ML: data eng, data science, ML eng, AI eng, ML research
+  tpm                   Technical Program Management: TPM, EPM, technical project mgmt
+  pm                    Product Management: PM, technical PM
+  em                    Engineering Management: all levels — uses manager track only
+  recruiting            Technical Recruiting: tech recruiting, engineering recruiting
+  it_network            IT and Network: IT support, help desk, network eng, sysadmin
+  controls_industrial   Controls and Industrial: controls eng, automation eng, commissioning, PLC techs
+
+
+LEVEL TAXONOMY
+
+IC Track — applies to: swe, infra, data, tpm, pm, recruiting, it_network
+
+  IC1   Entry / New Grad         $100k-$160k     Google L3, Meta E3, Amazon L4/SDE I, MSFT 59
+  IC2   Mid-level                $140k-$220k     Google L4, Meta E4, Amazon L5/SDE II, MSFT 61
+  IC3   Senior                   $180k-$300k     Google L5, Meta E5, Amazon L6/SDE III, MSFT 63-64
+  IC4   Staff                    $250k-$400k+    Google L6, Meta E6, Amazon L7/Principal, MSFT 65-66
+  IC5   Principal                $350k-$600k+    Google L7, Meta E7, Amazon Distinguished, MSFT 67
+  IC6   Distinguished / Fellow   Rare, company-specific. L8+
+
+Manager Track — applies to: em; also recruiting and it_network for explicit people-management postings
+
+  M1    Engineering Manager / TLM          Front-line, 1-2 teams. Comp equivalent to IC3-IC4
+  M2    Senior EM / Group EM               Manages managers or multi-team. Comp equivalent to IC4-IC5
+  M3    Director of Engineering            Owns a product area or functional domain
+  M4    VP Engineering and above           Rarely appears in external postings
+
+Controls and Industrial Track — applies to: controls_industrial ONLY
+
+  T1    PLC Technician I/II                $60k-$85k annualized. Often on Indeed/ZipRecruiter, not Greenhouse
+  T2    Senior / Lead PLC Technician       Top of technician branch
+  E1    Controls / Automation Engineer     Junior to mid. $80k-$110k nationally
+  E2    Senior Controls / Automation Eng   Career-level. $100k-$135k nationally; Seattle/PNW ~$120k-$140k
+  E3    Staff / Principal Controls Eng     Architectural scope, quasi-management
+  E4    Lead / Principal Industrial Eng    Top of IC branch for this family
+  CM1   Commissioning Engineer             $90k-$130k base plus significant per diem and travel premium
+  CM2   Senior / Lead Commissioning Eng
+
+
+SALARY NORMALIZATION RULES
+
+- All compensation is stored and reported as annualized USD base salary only
+- For hourly postings: annual = hourly_rate * 2080
+- Bonus and equity language is captured as metadata only — never written into salary_min_usd, salary_max_usd, or salary_midpoint_usd
+- salary_midpoint_usd is always computed: (salary_min_usd + salary_max_usd) / 2. Never user-supplied.
+- salary_spread_pct is always computed: (salary_max_usd - salary_min_usd) / salary_min_usd * 100
+- Any posting where salary_spread_pct exceeds 60 must be flagged multi_level_range = true. Exclude these from single-level analysis by default. Treat their midpoints conservatively when included.
+
+
+DATA SOURCES BY ROLE FAMILY
+
+Different families live in different data ecosystems. A single collection strategy does not serve all of them.
+
+Tech roles (swe, infra, data, tpm, pm, em):
+Primary surface is first-party company career pages via ATS APIs — Greenhouse, Lever, Ashby. This is where pay transparency law generates real structured salary range data.
+
+Recruiting:
+First-party career pages for tech employers. BuiltIn by city is a useful supplementary board — it carries salary data and is tech-sector focused.
+
+IT and Network:
+First-party career pages for tech employers. BuiltIn and ZipRecruiter by metro for broader market signal. Salary.com for percentile anchors on commoditized roles.
+
+Controls and Industrial:
+Fundamentally different from all other families. Most controls and automation employers do not use Greenhouse or Lever. They use Workday, iCIMS, or proprietary career pages, and they frequently post on Indeed, ZipRecruiter, and industry-specific boards. The ATS API approach covers a smaller fraction of this universe.
+
+Required hybrid for controls_industrial: ATS-native collection for tech-adjacent industrial companies that happen to use Greenhouse or Lever, supplemented by board-level collection from Indeed and ZipRecruiter using specific saved searches per metro and role combination. Salary.com and PayScale are useful percentile reference sources for this family.
+
+Board-level data for controls_industrial must always be stored with source_type: board. Never mix source_type: board with source_type: company_career_page when computing employer-specific trends.
+
+
+COLLECTION ARCHITECTURE
+
+Do not use Claude Computer Use or any GUI browser agent as the primary collection layer. The majority of target companies expose clean JSON APIs. Using a browser agent for an endpoint like boards-api.greenhouse.io adds agent latency, token cost, and fragility for work a single httpx call handles in milliseconds.
+
+Technology stack:
+- Python with httpx or requests for Greenhouse, Lever, and Ashby (the structured API tier)
+- Playwright or Puppeteer (headless browser) for Workday and unknown legacy ATS (the fallback tier)
+- Claude API calls (not Computer Use) for LLM normalization post-collection
+
+The browser fallback tier should be a small fraction of total poll volume, not the backbone.
+
+
+ATS COLLECTION ENDPOINTS
+
+Greenhouse — no authentication required, no stated rate limits
+
+  GET https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs?content=true
+
+  board_token is the slug at boards.greenhouse.io/{token}. Discoverable from the company careers page. Stable indefinitely.
+  Response includes: job_id, title, updated_at, requisition_id, location, content (full HTML), department hierarchy, office structure with location metadata.
+  Limitation: API exposes updated_at only, not original publish date. Assign first_observed_at from the first snapshot where an external_id appears in your system.
+
+Lever — no authentication required
+
+  GET https://api.lever.co/v0/postings/{clientname}
+
+  Each posting includes an optional salary object: { currency, interval, min, max } plus salary range description as HTML and plain text. Always check the salary object before falling back to description parsing.
+
+Ashby — no authentication required
+
+  GET https://api.ashbyhq.com/posting-api/job-board/{clientname}?includeCompensation=true
+
+  Always include ?includeCompensation=true. Without it, compensation data is not returned.
+  Response includes compensationTierSummary, scrapeableCompensationSalarySummary, and structured compensationTiers objects.
+
+Workday — Phase 2 only, do not implement in v1
+
+  No public-facing API. Collection requires intercepting XHR calls via Playwright or Puppeteer. Consistent URL schema: {company}.wd1.myworkdayjobs.com.
+
+Job Boards (Layer 5 — Controls/Industrial and broader market signal)
+
+  Indeed and ZipRecruiter via saved searches scoped to metro and role combination.
+  These are market-level signals for anchoring and validation, not longitudinal employer records.
+  Always store with source_type: board. Never mix with source_type: company_career_page in employer-specific trend queries.
+
+
+DATABASE SCHEMA
+
+companies table:
+  company_id              UUID, primary key
+  canonical_name          text, not null
+  canonical_domain        text
+  careers_url             text
+  ats_type                text — enum: greenhouse, lever, ashby, workday, icims, indeed_only, unknown
+  ats_board_token         text
+  metro                   text — canonical metro key or "remote-first"
+  industry                text — enum: tech, fintech, healthcare, industrial, manufacturing, other
+  size_band               text — enum: seed, series_a_c, growth, public, enterprise
+  polling_tier            integer — 1, 2, 3, or 99 (inactive)
+  last_successful_poll    timestamptz
+  salary_transparency     text — enum: high, medium, low, unknown
+  role_family_tags        text array — role families observed at this company
+
+snapshots table:
+  snapshot_id     UUID, primary key
+  company_id      UUID, foreign key to companies
+  observed_at     timestamptz, not null
+  source_url      text
+  raw_payload     bytea — compressed JSON blob
+  job_count       integer
+
+postings table — the core time-series record:
+  posting_id              UUID, primary key
+  snapshot_id             UUID, foreign key to snapshots
+  company_id              UUID, foreign key to companies
+  external_id             text — the ATS platform's own job ID; stable key for versioning
+  title_raw               text
+  title_normalized        text
+  level_code              text — IC1-IC6, M1-M4, T1-T2, E1-E4, or CM1-CM2
+  role_family             text — one of the nine family codes above
+  location_raw            text
+  metro_normalized        text
+  is_remote               boolean
+  salary_min_raw          text — original string from source
+  salary_min_usd          integer — annualized base, normalized
+  salary_max_raw          text
+  salary_max_usd          integer — annualized base, normalized
+  salary_midpoint_usd     integer — computed: (min + max) / 2
+  salary_spread_pct       numeric — computed: (max - min) / min * 100
+  multi_level_range       boolean — computed: true when salary_spread_pct > 60
+  salary_source           text — enum: structured_api, parsed_description, absent
+  comp_type_tag           text — enum: base_only, base_ote_mentioned, base_bonus_equity_mentioned
+  transparency_quality    text — enum: exact_range, vague, absent
+  description_hash        text — SHA-256 of the job description; used for change detection and LLM cache keying
+  first_observed_at       timestamptz, not null
+  last_observed_at        timestamptz, not null
+  status                  text — enum: active, presumed_closed. Default: active
+  version_number          integer, not null, default 1
+  source_type             text — enum: company_career_page, board. Default: company_career_page
+
+
+CRITICAL VERSIONING RULE
+
+When a poll detects that salary_min_usd or salary_max_usd has changed for an existing (company_id, external_id) pair, INSERT a new row with version_number incremented. Do NOT update the existing row's salary fields. Never overwrite historical salary data. This versioning is what makes statements like "this company dropped Senior SWE midpoints by 10% in Q1 while widening ranges in SF" possible. Destroying old rows destroys the product.
+
+
+LLM NORMALIZATION — THREE TASKS ONLY
+
+The LLM is called post-collection for normalization only. It does not fetch data, make scheduling decisions, route requests, or participate in any control flow.
+
+Task 1 — Title normalization
+  Input: raw title string, known company-level naming conventions for this company_id, full taxonomy reference
+  Output: { normalized_title, role_family, level_code } as JSON only, no prose
+  Cache key: (company_id, title_raw)
+
+Task 2 — Salary extraction from description text
+  Used when structured salary fields are absent — common for Workday and legacy ATS postings
+  Input: job description HTML or plain text
+  Output: { salary_min_usd, salary_max_usd, salary_source: "parsed_description" } as JSON
+  Cache key: description_hash — never re-run for an unchanged description
+
+Task 3 — Metro normalization
+  Input: raw location string (e.g. "Greater Seattle Area", "SF Bay", "New York, NY")
+  Output: canonical metro key as a single string
+  Cache aggressively — the same location strings recur constantly across all companies and all polling cycles
+
+
+POLLING SCHEDULER
+
+Priority queue ordered by next_poll_due_at. Workers are stateless.
+
+  Tier 1       Every 24 hours
+  Tier 2       Every 3-7 days
+  Tier 3       Every 2-4 weeks
+  Inactive     Monthly
+
+Error handling:
+  HTTP 429 or consecutive 5xx responses trigger exponential backoff
+  Three consecutive failures flag the company record for human review and suspend further polling
+
+Scale: at 10,000 companies with an average 4-day cadence, volume is approximately 2,500 polls per day, roughly 1.75 per minute. A single scheduler process with 5-10 workers handles this comfortably at v1 scale. No distributed queue infrastructure is needed.
+
+
+ANALYTICAL INTEGRITY RULES
+
+- When querying compensation trends, always filter source_type = 'company_career_page' unless explicitly doing market-wide analysis
+- When querying single-level compensation, always filter multi_level_range = false or explicitly document that wide ranges are included
+- When comparing across time, use first_observed_at on each version_number row to timestamp the salary range — not the snapshot's observed_at
+- Never average salary across different comp_type_tag values without flagging it — base_only and base_ote_mentioned are not comparable
+- Controls and Industrial comp benchmarks are national unless a metro is specified; Seattle/PNW runs roughly $15k-$20k above national median for E2
+
+
+WHAT THIS DATA CAN AND CANNOT CLAIM
+
+Can claim:
+- What employers advertised they would pay for a given profile in a given market at a given point in time
+- Longitudinal trends: e.g. "Bay Area Senior SWE posted midpoints compressed between 2024 and 2026"
+- Transparency analytics: which employers post narrow realistic bands vs. wide multi-level ranges, and how that shifts as pay transparency laws expand
+- Unified coverage of controls, industrial, and commissioning roles alongside software and tech roles under one normalization scheme
+
+Cannot claim:
+- What candidates actually signed — closed offer data is not in this system
+- That posted ranges reflect final negotiated compensation
+- Coverage of employers who do not post salary ranges (these are captured with transparency_quality: absent)
+
+If candidate-reported closed offer data is ever added, the delta between posted ranges and closed offers for the same roles at the same companies over time is itself a valuable and separately publishable product. Keep the schema clean enough to support that join.

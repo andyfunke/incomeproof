@@ -12,7 +12,7 @@ The product's defensibility accumulates every day the system runs. Longitudinal 
 
 ## What You Are Not Building
 
-You are not building a general internet crawler. You are not dispatching an AI agent to browse every company website. You are not trying to capture every employer in the United States on day one. You are not competing with Indeed or LinkedIn for posting coverage. You are building a narrow, high-signal registry of target employers with structured collectors, and you are watching that registry systematically over time.
+You are not building a general internet crawler. You are not dispatching an AI agent to browse every company website. You are not trying to capture every employer in the United States on day one. You are not competing with Indeed or LinkedIn for posting coverage. You are building a narrow, high-signal registry of target employers with structured collectors, and you are watching that registry systematically over time. Never mix candidate-reported compensation into the same tables as employer-posted ranges.
 
 ---
 
@@ -73,7 +73,7 @@ This track is separate because the Controls/Industrial family has a different la
 
 ### Salary Range Normalization
 
-All compensation is stored and reported as annualized USD base salary. For hourly postings (common in Controls/Industrial), multiply by 2,080 for the standard full-time equivalent. Bonus and equity language is captured as metadata but kept separate from base to avoid mixing compensation types when comparing.
+All compensation is stored and reported as annualized USD base salary only. For hourly postings (common in Controls/Industrial), multiply by 2,080 for the standard full-time equivalent. Bonus and equity language is captured as metadata only—never written into `salary_min_usd`, `salary_max_usd`, or `salary_midpoint_usd`. `salary_midpoint_usd` is always computed as `(salary_min_usd + salary_max_usd) / 2` (never user-supplied). `salary_spread_pct` is always computed as `(salary_max_usd - salary_min_usd) / salary_min_usd × 100`. Any posting where `salary_spread_pct` exceeds 60 must set `multi_level_range = true`; exclude these from single-level analysis by default and treat midpoints conservatively when included.
 
 ---
 
@@ -87,7 +87,7 @@ For Recruiting roles, first-party career pages work for tech-sector employers. B
 
 For IT/Network roles, first-party career pages work for tech employers. BuiltIn and ZipRecruiter by metro provide broader market signal. Salary.com provides useful percentile anchors for these roles since they are more commoditized.
 
-For Controls/Industrial roles, the collection strategy is fundamentally different. Most Controls and Automation employers do not use Greenhouse or Lever. They use Workday, iCIMS, or proprietary career pages, and they frequently post on Indeed, ZipRecruiter, and industry-specific boards. The structured ATS API approach covers a smaller fraction of this universe. For this family, a hybrid approach is required: ATS-native collection for the industrial companies that happen to use those platforms (there are some, particularly in the tech-adjacent industrial space), supplemented by board-level collection from Indeed and ZipRecruiter using specific saved searches per metro and role combination. Salary.com and PayScale are also useful percentile reference sources for this family since they have better coverage of non-tech industries.
+For Controls/Industrial roles, the collection strategy is fundamentally different. Most Controls and Automation employers do not use Greenhouse or Lever. They use Workday, iCIMS, or proprietary career pages, and they frequently post on Indeed, ZipRecruiter, and industry-specific boards. The structured ATS API approach covers a smaller fraction of this universe. For this family, a hybrid approach is required: ATS-native collection for tech-adjacent industrial companies that happen to use Greenhouse or Lever, supplemented by board-level collection from Indeed and ZipRecruiter using specific saved searches per metro and role combination. Salary.com and PayScale are also useful percentile reference sources for this family since they have better coverage of non-tech industries. Board-level rows for this family must always use `source_type: board` and must never be mixed with `source_type: company_career_page` when computing employer-specific trends.
 
 ---
 
@@ -99,7 +99,7 @@ Computer is designed for tasks where a human would navigate a GUI, click through
 
 **Where Computer (or headless browser) earns its keep:** the narrow fallback tier—Workday and unknown ATS sites that require a rendered browser session to obtain job data. That tier should be a small fraction of total poll volume, not the backbone.
 
-**Framing:** Python with `httpx` or `requests` for structured API tiers (Greenhouse, Lever, Ashby); Computer or Playwright/Puppeteer for Workday and unknown fallback; LLM calls via Claude API (not Computer) for normalization after collection.
+**Framing:** Python with `httpx` or `requests` for structured API tiers (Greenhouse, Lever, Ashby); Playwright or Puppeteer (headless browser) for Workday and unknown legacy ATS fallback; Claude API calls (not Computer Use) for LLM normalization after collection.
 
 ---
 
@@ -123,7 +123,7 @@ Limitation: the Job Board API does not expose the time a job was first published
 
 Every Lever customer has a public API that allows job retrieval with no authentication required, at `GET https://api.lever.co/v0/postings/{clientname}`.
 
-Each posting includes an optional salary object with currency, interval, minimum, and maximum values, plus an optional salary range description as both styled HTML and plain text.
+Each posting includes an optional salary object with currency, interval, minimum, and maximum values, plus an optional salary range description as both styled HTML and plain text. Always check the salary object before falling back to description parsing.
 
 ### Layer 3: Ashby (Unauthenticated, Structured JSON, Native Compensation Fields)
 
@@ -133,7 +133,7 @@ Response includes `compensationTierSummary`, `scrapeableCompensationSalarySummar
 
 ### Layer 4: Workday (Browser Rendering Required, Phase 2)
 
-Workday does not have a public-facing API. Collection requires intercepting the XHR calls that Workday frontend pages make to their internal search endpoint. This is feasible via Playwright or Puppeteer, following the consistent `{company}.wd1.myworkdayjobs.com` URL schema. This is phase 2, not v1.
+Workday does not have a public-facing API. Collection requires intercepting the XHR calls that Workday frontend pages make to their internal search endpoint. This is feasible via Playwright or Puppeteer, following the consistent `{company}.wd1.myworkdayjobs.com` URL schema. **Do not implement Workday collection in v1** (phase 2 only).
 
 ### Layer 5: Job Boards for Controls/Industrial and Broader Market Signal
 
@@ -155,7 +155,7 @@ ats_board_token
 metro                primary metro or "remote-first"
 industry             tech | fintech | healthcare | industrial | manufacturing | other
 size_band            seed | series_a_c | growth | public | enterprise
-polling_tier         1 | 2 | 3 | inactive
+polling_tier         1 | 2 | 3 | 99 (inactive)
 last_successful_poll timestamp
 salary_transparency  high | medium | low | unknown
 role_family_tags     array
@@ -190,8 +190,9 @@ salary_min_raw
 salary_min_usd       integer, annualized base
 salary_max_raw
 salary_max_usd
-salary_midpoint_usd  computed: (min + max) / 2
+salary_midpoint_usd  computed: (min + max) / 2; never user-supplied
 salary_spread_pct    computed: (max - min) / min × 100
+multi_level_range    true when salary_spread_pct > 60; exclude from single-level analysis by default
 salary_source        structured_api | parsed_description | absent
 comp_type_tag        base_only | base_ote_mentioned | base_bonus_equity_mentioned
 transparency_quality exact_range | vague | absent
@@ -200,11 +201,12 @@ first_observed_at
 last_observed_at
 status               active | presumed_closed
 version_number       integer, increments when salary range changes
+source_type          company_career_page | board (default: company_career_page)
 ```
 
-The `version_number` field is critical for longitudinal analysis. When a polling fetch shows that `salary_min_usd` or `salary_max_usd` has changed for an existing `external_id`, create a new posting record with `version_number` incremented rather than overwriting. This lets you say things like "in Q1 this company dropped Senior SWE midpoints by 10% in Seattle while widening ranges in SF."
+The `version_number` field is critical for longitudinal analysis. When a poll detects that `salary_min_usd` or `salary_max_usd` has changed for an existing `(company_id, external_id)` pair, **INSERT** a new posting row with `version_number` incremented. **Do not** update the prior row’s salary fields—never overwrite historical salary data.
 
-The `salary_spread_pct` field addresses a known bias in pay transparency law posting: companies increasingly post very wide ranges that cover multiple levels. Flag postings where spread exceeds 60% as `multi_level_range` candidates, and treat their midpoints conservatively or exclude them from single-level analysis.
+The `salary_spread_pct` and `multi_level_range` fields address a known bias in pay transparency law posting: companies increasingly post very wide ranges that cover multiple levels. Treat wide-range midpoints conservatively or exclude them from single-level analysis when `multi_level_range` is true.
 
 ---
 
@@ -212,8 +214,8 @@ The `salary_spread_pct` field addresses a known bias in pay transparency law pos
 
 Three tasks only. Everything else is deterministic.
 
-1. **Title normalization** returns `{normalized_title, role_family, level_code}`. Prompt includes raw title, any known company-level naming convention, and the taxonomy reference. Request JSON output only. Cache by title string per company.
-2. **Salary extraction from description text** handles the case where structured salary fields are absent. Particularly important for Workday and legacy ATS postings. Cache by `description_hash`.
+1. **Title normalization** returns `{normalized_title, role_family, level_code}` as JSON only (no prose). Input: raw title, known company-level naming conventions for this `company_id`, full taxonomy reference. Cache key: `(company_id, title_raw)`.
+2. **Salary extraction from description text** handles the case where structured salary fields are absent (common for Workday and legacy ATS). Output JSON includes `salary_min_usd`, `salary_max_usd`, and `salary_source: "parsed_description"`. Cache key: `description_hash`—never re-run for an unchanged description.
 3. **Metro normalization** resolves ambiguous location strings to a standard metro key. Cache aggressively; most patterns recur constantly.
 
 What LLM does not do: fetching, scheduling, routing, or any control flow decision.
@@ -222,9 +224,26 @@ What LLM does not do: fetching, scheduling, routing, or any control flow decisio
 
 ## Polling Scheduler
 
-Priority queue ordered by `next_poll_due_at`. Tier 1 every 24 hours, Tier 2 every 3 to 7 days, Tier 3 every 2 to 4 weeks, inactive monthly. Workers are stateless. HTTP 429 or consecutive 5xx triggers exponential backoff. Three consecutive failures flag for review.
+Priority queue ordered by `next_poll_due_at`. Workers are stateless.
 
-At 10,000 companies with average 4-day cadence: approximately 2,500 polls per day, 1.75 per minute. No distributed queue infrastructure required at v1 scale. A single scheduler process and 5 to 10 workers handles this comfortably.
+- Tier 1: every 24 hours  
+- Tier 2: every 3–7 days  
+- Tier 3: every 2–4 weeks  
+- Inactive (tier 99): monthly  
+
+HTTP 429 or consecutive 5xx responses trigger exponential backoff. Three consecutive failures flag the company for human review and suspend further polling.
+
+At 10,000 companies with average 4-day cadence: approximately 2,500 polls per day, ~1.75 per minute. No distributed queue infrastructure required at v1 scale. A single scheduler process and 5–10 workers handles this comfortably.
+
+---
+
+## Analytical Integrity Rules
+
+- When querying compensation trends, filter `source_type = 'company_career_page'` unless explicitly doing market-wide analysis.
+- When querying single-level compensation, filter `multi_level_range = false` or explicitly document that wide ranges are included.
+- When comparing across time, use `first_observed_at` on each `version_number` row to timestamp the salary range—not the snapshot’s `observed_at`.
+- Never average salary across different `comp_type_tag` values without flagging it; `base_only` and `base_ote_mentioned` are not comparable.
+- Controls/Industrial comp benchmarks are national unless a metro is specified; Seattle/PNW runs roughly $15k–$20k above national median for E2.
 
 ---
 
@@ -238,4 +257,6 @@ Your data covers controls, industrial, and commissioning roles alongside softwar
 
 Your data includes transparency analytics as a product layer: which employers consistently post narrow, realistic bands versus wide ranges that span multiple levels, and how that shifts as pay transparency laws expand into new states.
 
-The honest statement of your limitations is also the right one to lead with to sophisticated users: you capture what employers say they will pay, not what candidates actually signed. If you ever collect candidate-reported closed offer data and can compare it to the posted ranges for the same roles at the same companies over time, the delta between posted and closed is itself a valuable and publishable product.
+The honest statement of your limitations is also the right one to lead with to sophisticated users: you capture what employers say they will pay, not what candidates actually signed. You cannot claim that posted ranges reflect final negotiated compensation, or full coverage where employers omit ranges (`transparency_quality: absent`).
+
+If candidate-reported closed offer data is ever added, the delta between posted ranges and closed offers for the same roles at the same companies over time is itself a valuable and separately publishable product—keep the schema clean enough to support that join without mixing sources in the same analytical tables.
